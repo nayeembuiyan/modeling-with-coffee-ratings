@@ -1,0 +1,443 @@
+---
+title: "Modeling with Coffee Ratings"
+author: "Nayeem Bhuiyan"
+date: "25/02/2022"
+output: html_document
+---
+
+
+```{r global-options, include = FALSE}
+knitr::opts_chunk$set(fig.width=8, fig.height=5.5, message=FALSE, warning=FALSE)
+```
+
+### Introduction
+
+While producing a shiny dashboard application, I had the opportunity to analyse the influence of various factors affecting coffee ratings. I designed a storyboard to address my findings by means of exploration and visualisation. For this report though I hope to develop two models - classification and regression - to predict one qualitative and one quantitative measure. This is my first attempt at applying machine learning concepts to the real life dataset and I anticipate it to be an amazing learning curve.  
+
+Coffee Ratings dataset is about two species of beans - Arabica and Robusta - with different varieties, across many countries and regions, grown in low to high altitudes and with different processing methods. It was rated on a 0 - 10 scale for distinct attributes like aroma, flavour, aftertaste, acidity etc.
+
+Buzzfeed data scientist James LeDoux collected the original data from the Coffee Quality Institute's review pages in January 2018 and then cleaned and published on his GitHub profile as Coffee-Quality-Database. I sourced [Coffee Rating](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-07-07/readme.md) dataset from tidyTuesday GitHub page published as part of their weekly dataset challenge by R4DS.
+
+This dataset has a lot of missing values and repetition of variables in some of the columns. This should not restrict my ability to find the right answers as there are other key variables with minimal or no missing values.
+
+This report is composed of five sections:
+
+* [Data description](#data-description)
+* [Methodology](#methodology)
+* [Analysis components](#analysis-components)
+* [Conclusions](#conclusions)
+* [References](#references)
+
+
+### Data description
+
+#### Questions
+
+* How accurately variety can be predicted using the variables - total_cup_points, species, country_of_origin, processing_method,
+color, moisture and altitude_mean_meters?
+
+* What are the best variables to predict total cup points with great accuracy?
+
+#### Data source
+
+The Coffee Ratings dataset were originally collected from the Coffee Quality Institute's review pages in January 2018. The data was then published on Buzzfeed Data Scientist James LeDoux's github as Coffee-Quality-Database in both raw and cleaned form. It was released on 7 July 2020, as part of their weekly dataset challenge in the Tidy Tuesday Project by R4DS.
+
+#### Observation
+
+This data records two species of coffee beans (Arabica and Robusta) by various attributes like variety, processing methods, colour and scores given by professional graders for aroma, flavour, aftertastes, acidity etc. It also includes metadata like owner, country of origin, producer, harvest year among others.
+
+The dataset has 1339 observations and 43 features. The features include character and numeric variables. Between the two species of coffee beans - Robusta only has 28 observations, rest are all Arabica. Data was collected for the harvest year 2009-18 and grading is available for the same period on a yearly basis. Although it has various metadata columns, lot of missing values makes few of those columns almost redundant to work with. Coffee grading variables 'uniformity', 'clean_cup', and 'sweetness' have perfect 10 score for more than 90% of their observations. Altitude has four separate columns with various quantification but it seems 'altitude_mean_meters' would be more suitable to employ in the models due to the least number of values missing and mean measurement is likely to provide better prediction accuracy.
+
+#### Data cleaning
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(visdat)
+library(rsample)
+library(randomForest)
+library(caret)
+library(modelr)
+library(forecast)
+library(broom)
+library(ggplot2)
+library(plotly)
+library(wesanderson)
+```
+
+```{r}
+coffee_ratings <- read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-07-07/coffee_ratings.csv')
+```
+
+Although James LeDoux transformed raw data into more usable format, there are still some cleaning to be done to improve data quality and overall productivity. I will start with drawing a vis_miss plot from 'naniar' package to highlight the missing observations for each column. 
+
+```{r}
+vis_miss(coffee_ratings) +
+  theme(axis.text.x = element_text(size = 8, angle = 90))
+```
+
+As you can see values missing mostly in farm_name, lot_number, mill, ico_number, company, altitude and producer. Excluding these variables will not have much impact on developing our models. For the remaining variables, decided not to impute over missing values considering there are very few of the missing values in those columns. Instead, I will use drop_na to drop rows containing missing observations.
+
+```{r}
+coffee_ratings <-  coffee_ratings %>% 
+  select(total_cup_points, species, country_of_origin, processing_method, variety,
+         aroma:cupper_points, moisture, color, altitude_mean_meters) %>%
+  drop_na()
+```
+
+Now I will make use of R base boxplot to visualise the distribution of numerical data and skewness.
+
+```{r}
+coffee_ratings %>% 
+  select_if(is.numeric) %>%
+  boxplot(las = 2, xlab = "", ylab = "")
+```
+
+It seems data is evenly spread for all the variables except for 'altitude_mean_meter'. I will remove these extreme values by filtering the dataset and keep the rest to ensure data integrity.
+
+```{r}
+coffee_ratings <- coffee_ratings %>% 
+  filter(altitude_mean_meters < 3500)
+```
+
+
+### Methodology
+
+With many machine learning algorithms available, I found it challenging to choose the most appropriate algorithm for finding answers to my research questions. I decided to follow a methodical decision making process to select the best model.
+
+##### Supervised vs unsupervised
+
+In essence, supervised learning uses labelled input and output data, while an unsupervised learning algorithms analyse and cluster unlabeled data sets. Coffee Ratings dataset is perfectly labeled, it's input can be fed into the model along with the output. The model can learn from the training dataset and then evaluate the accuracy of the learned function on a test set. 
+
+##### Classification vs regression
+
+Supervised learning algorithms can be split into two categories: classification and regression. Classification algorithms are used to predict categorical/discreet values, while regression algorithms predict continuous values. I will have the opportunity to use both for my research questions. 
+
+**How accurately variety can be predicted using the variables - total_cup_points, species, country_of_origin, processing_method,
+color, moisture and altitude_mean_meters?**
+
+The output variable - variety - is categorical with 25 distinct categories like Caturra, Bourbon, Typica etc. Therefore, a classification model provided with several input variables can predict the variety category. Examples of the common classification algorithms include logistic regression, decision trees, Naive Bayes, and K-nearest neighbours.
+
+Following the consideration of logistic regression, K-nearest neighbours and random forest for classification, I became more biased towards developing a random forest model:
+
+* Random Forest is a decision tree based learning algorithm that leverages the power of multiple decision trees for making decisions. 
+* It can be used for classification or regression. 
+* The model can deal with large number of features.
+* It has reduced risk of overfitting.
+* Helps with feature selection based on importance. 
+* Relatively easy to implement as it has only two free parameters - ntree and mtry with default value of 500 and sq.root(p) respectively. 
+* The algorithm also provides a higher level of accuracy in predicting outcomes over other classification algorithms.
+
+**What are the best variables to predict total cup points with great accuracy?**
+
+The outcome or response variable - total_cup_points - is a numeric column which consists of continuous values. Hence, a regression algorithm would be best suited to predict total cup points. The different types of regression algorithms include simple linear regression, multiple linear regression and polynomial regression.
+
+Considering we have two or more independent variables and linear relationship exists between dependent variable (total_cup_points) and the predictors, multiple linear regression (MLR) would be useful in this scenario:
+
+* Allows multiple independent variables to be the part of the regression model.
+* MLR has the ability to determine the relative influence of one or more predictor variables to the target variable.
+* Ability to identify outliers, or noise data.
+* Easy to interpret and transform the idea to real-life decision making.
+
+Before starting to build the models, I want to examine if 'total_cup_points' are aggregate of the variables 'aroma:cupper_points'. I can use 'pivot_longer' function to validate my assumption. 
+
+```{r}
+coffee_ratings %>% 
+  select(total_cup_points, aroma:cupper_points) %>% 
+  mutate(row_num = row_number()) %>% 
+  pivot_longer(aroma:cupper_points, names_to = "name", values_to = "value") %>% 
+  group_by(row_num) %>% 
+  summarise(total_cup_points = mean(total_cup_points), 
+            value = sum(value))
+```
+This being the case I have chosen only to include 2 columns from aroma:cupper_points for the regression algorithm. The reason being using more of these predictors will lead to the model ignoring all other predictors. 
+  
+In order to implement into the modeling correctly and to ensure more efficient use of memory, I will convert character variables to factors.
+
+```{r}
+# converting character variables to factor
+coffee_factored <- coffee_ratings %>%
+  mutate(species = as.factor(species)) %>%
+  mutate(country_of_origin = as.factor(country_of_origin)) %>%
+  mutate(processing_method = as.factor(processing_method)) %>%
+  mutate(color = as.factor(color))
+```
+
+
+### Analysis Components
+
+**How accurately variety can be predicted using the feature variables - total_cup_points, species, country_of_origin, processing_method,
+color, moisture and altitude_mean_meters?**
+
+It would be nice to consider all 25 different varieties for this model, but to get better prediction outcome we will select only the top 6 varieties by number of observations, which accounts for about 80% of the data.   
+
+
+```{r, }
+top_variety <- coffee_factored %>%
+  count(variety = factor(variety)) %>% 
+  mutate(pct = prop.table(n)) %>% 
+  arrange(-n)
+top_variety
+```
+
+```{r}
+coffee_select_variety<- coffee_factored %>%
+  filter(variety %in% c("Bourbon", "Catimor", "Catuai", "Caturra", "Typica", "Yellow Bourbon"))
+```
+
+To accurately evaluate our model and to prevent overfitting, I split the data 70/30 into train and test sets.
+
+```{r}
+# split data into training and test sets
+set.seed(123)
+coffee_split <- initial_split(coffee_select_variety, prop = .7)
+coffee_train <- training(coffee_split)
+coffee_test  <- testing(coffee_split)
+coffee_train$variety <- as_factor(coffee_train$variety)
+```
+
+Now, I will create a random forest model with default parameters. By default, number of trees is 500 and number of variables tried at each split is 2 as classification trees have a default setting of the square root of the number of variable. Model will make use of the 'variety' as a function of 'total_cup_points', 'species', 'country_of_origin', 'processing_method', 'moisture', 'color' and 'altitude_mean_meters' using 'coffee_train' data. This is a classification problem as 'variety' is a factor variable. Later I will check to see if 500 trees is enough for optimal classification.
+
+```{r}
+# fit random forest to the training data
+model1 <- randomForest(variety ~ total_cup_points + species + country_of_origin + processing_method + moisture + color + altitude_mean_meters, data = coffee_train)
+model1
+```
+
+Model summary shows OOB error estimate of 25.6%, means that 74.4% of the OOB samples were correctly classified by the random forest model. Then we have a confusion matrix, which shows how many variety of the beans correctly labeled or otherwise for each variety. For instance, there were 105 Caturra variety that were classified correctly but 13 were classified incorrectly as Catuai. 
+
+Next up I will do the prediction on training data by specifying the model created.
+
+```{r}
+# predict the training set result
+pred_coffee_train <- predict(model1, coffee_train)
+matrix_train <- confusionMatrix(pred_coffee_train, coffee_train$variety)
+matrix_train$overall
+```
+
+This model has an accuracy score of 93.75% on the training data. That is quite impressive but expected since training data already been seen by the model. More important measure would be the accuracy score for the test data.
+
+```{r}
+# predict the testing set result
+coffee_test$variety <- as_factor(coffee_test$variety)
+pred_coffee_test <- predict(model1, coffee_test)
+matrix_test <- confusionMatrix(pred_coffee_test, coffee_test$variety)
+matrix_test$overall
+```
+
+We see accuracy dropped down to 75.70% for the test data. This is more accurate assessment of the accuracy of our model.
+
+Now lets draw a ggplot to look at the error rate in the model.
+
+```{r}
+oob.error.data <- data.frame(
+  Trees = rep(1:nrow(model1$err.rate), times = 7),
+  Type = rep(c("OOB", "Caturra", "Catuai", "Bourbon", "Typica", "Yellow Bourbon", "Catimor"), each = nrow(model1$err.rate)),
+  Error = c(model1$err.rate[,"OOB"],
+            model1$err.rate[,"Caturra"],
+            model1$err.rate[,"Catuai"],
+            model1$err.rate[,"Bourbon"],
+            model1$err.rate[,"Typica"],
+            model1$err.rate[,"Yellow Bourbon"],
+            model1$err.rate[,"Catimor"]))
+
+error_plot <- ggplot(data = oob.error.data, aes(x = Trees, y = Error)) +
+  geom_line(aes(color = Type)) +
+  theme_bw() +
+  scale_color_manual(values = c("#999999", "#E69F00", "#56B4E9", "#009E73", 
+                                "#F0E442", "#0072B2", "#D55E00", "#CC79A7")) +
+  labs(title = "Distribution of error") +
+  theme(legend.position = "bottom") +
+  theme(legend.title = element_blank())
+        
+interactive_error_plot <- ggplotly(error_plot)
+interactive_error_plot
+```
+
+
+Here, each line represents error rate for classifying different variety and the yellow line shows the overall OOB error rate. We see the error rates decrease when our random forest has more trees. It can be tweaked by adding more trees to see if error rates will go down further.
+
+As one of the best "out-of-the-box" machine learning algorithm, random forests perform exceptionally well with very little tuning required. Even so we can try to tune the parameters of our model for better accuracy.
+
+```{r, results = FALSE}
+coffee_train <- as.data.frame(coffee_train)
+tuneRF(coffee_train[,-5], coffee_train[,5],
+       stepFactor = 0.5,
+       plot = TRUE,
+       ntreeTry = 500,
+       trace = TRUE,
+       improve = 0.05)
+      
+```
+
+
+OOB Error was initially quite high with mtry at 1 and then it reaches the bottom with mtry at 8. This gives us an idea of which mtry value to choose.
+
+Now we can refine our model by replacing the values for ntree and mtry, also adding few more parameters.
+
+```{r, message=FALSE, warning=FALSE}
+model1_refined <- randomForest(variety ~ total_cup_points + species + country_of_origin + processing_method + moisture + color + altitude_mean_meters, data = coffee_train, ntree = 540, mtry = 8, importance = TRUE, proximity = TRUE)
+model1_refined
+```
+
+There are 540 trees used in the model with mtry of 8. OOB error rate slightly climbed to 27.42% from earlier derived rate of 25.6%. 
+
+```{r}
+# predict the training set result
+pred_coffee_train1 <- predict(model1_refined, coffee_train)
+matrix_train1 <- confusionMatrix(pred_coffee_train1, coffee_train$variety)
+matrix_train1$overall
+```
+
+Training accuracy increased to 100% from 93.75% but again the real test would be to find how model perform on test data. 
+
+```{r, message=FALSE, warning=FALSE}
+# predict the testing set result
+pred_coffee_test1 <- predict(model1_refined, coffee_test)
+matrix_test1 <- confusionMatrix(pred_coffee_test1, coffee_test$variety)
+matrix_test1$overall
+```
+
+Accuracy score of the model on the test data increased to 76.63% from the score achieved (75.70%) in the first attempt. So overall the model performs well to predict variety.
+
+
+**What are the best variables to predict total cup points with great accuracy?**
+
+To start with I will plot the selected variables to find out the relationship between them. 
+
+```{r}
+coffee_ratings1 <- coffee_factored %>% 
+  select(total_cup_points, species, processing_method, flavor, cupper_points, moisture, altitude_mean_meters)
+```
+
+```{r}
+plot(coffee_ratings1)
+```
+
+From the above plot we can see total cup points are strongly correlated with both flavor and cupper points but not so much with the other variables. Also flavor and cupper points are correlated - this means that they provide similar information and we might not need both in our model. For this model though we will go ahead with using the variables 'species', 'processing_method', 'flavor', 'cupper_points', 'moisture' and 'altitude_mean_meters'. Later we will utilise backward prediction to shortlist the best predictor variables. 
+
+```{r}
+# split data into training and test sets
+set.seed(123)
+coffee_split <- initial_split(coffee_ratings1, prop = 0.7)
+coffee_train <- training(coffee_split)
+coffee_test  <- testing(coffee_split)
+```
+
+After splitting the data into training and test set we can use lm() function to fit a plane to the training data.
+
+```{r}
+model2 <- lm(total_cup_points ~ species + processing_method + flavor + cupper_points + moisture + altitude_mean_meters, data = coffee_train)
+summary(model2)
+```
+
+From the above summary we see the p-value of <0.05 for 'speciesRobusta', 'flavor' and 'cupper_points' which means these variables are contributing significantly to the model. On the contrary 'processing_methodOther', 'processing_methodSemi-washed / Semi-pulped' and 'moisture' have very high p-values. Multiple R-squared of 0.7727 means that variables in the model are contributing 77.27% of overall variability, so there is a room for improvement by adding other variables. F-statistic of 236 indicates R-squared is significant and p-value of <0.05 at the bottom says that variables used in the model gives us the reliable estimate of 'total_cup_points'.
+
+```{r}
+glance(model2)
+```
+We can also look at Akaike information criterion (AIC) and Bayesian information criterion (BIC) to further assess the quality of our model. Here, AIC and BIC have very high values, models with lower values are considered for better quality. Next we will apply Backward Elimination to reduce the number of predictors and reducing the multicollinearity problem. It can also resolve the model overfitting.
+
+```{r}
+model2_step_b <- step(model2, direction = "backward")
+```
+
+Backward elimination started with AIC of 243.08 and 6 features. After 4 elimination phases, AIC value reduced to 235.94 and only 3 variables remaining - 'species', 'cupper_points' and 'flavor'. 
+
+```{r}
+summary(model2_step_b)
+```
+
+Stepwise model summary displays significant improvement in F-statistic value along with overall p-value of <0.05. Larger F-statistic value suggests that stepwise model provides a better "goodness-of-fit".
+
+```{r}
+wp <- wes_palettes$Rushmore1
+wp2 <- wes_palettes$BottleRocket1
+resid_plot <-  ggplot(model2_step_b, aes(.fitted, .resid)) +
+  geom_ref_line(h = 0) +
+  geom_point(alpha = 0.6, color = wp2[5]) +
+  geom_smooth(se = FALSE, color = wp[4]) +
+  theme_bw() +
+  ggtitle("Residuals vs Fitted")
+
+interactive_resid_plot <- ggplotly(resid_plot)
+interactive_resid_plot
+```
+
+Residuals vs fitted plot shows residuals are spread around the '0' line. This suggests the assumptions that the relationship is linear is reasonable. There are few residual distanced from the basic random pattern of residuals, which suggests that some outliers are present in the data. Model derived from backward elimination does not seem to suffer from heteroscedasticity.
+
+Now we can use predict() function to check the accuracy on the test data.
+
+```{r}
+model2.pred <- predict(model2_step_b, coffee_test)
+```
+
+For each of the observations in the test data, we can compare predicted outcome y^ and the actual value y to obtain the residuals.
+
+```{r}
+some.residuals <- coffee_test$total_cup_points - model2.pred
+resid.data <- data.frame("Predicted" = model2.pred,
+                              "Actual" = coffee_test$total_cup_points,
+                              "Residual" = some.residuals) 
+
+resid_plot <- ggplot(resid.data, aes(x=some.residuals)) +
+  geom_histogram() +
+  theme_bw() +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Residual Histogram") 
+  
+interactive_resid_plot <- ggplotly(resid_plot)
+interactive_resid_plot
+```
+
+Above histogram shows an approximately normal distribution of residuals with most of the errors are between (-2, 2). But there are few outliers. This error magnitude might be small relative to the total cup points but should be taken into account when making predictions. 
+
+
+### Conclusions
+
+**Random Forest**
+
+* Random forest model achieving accuracy of 100% on training data indicates either the model is overfitted or algorithm learned exceptionally well to predict variety with precision.
+
+* Test classification accuracy of 76.63% achieved by our model further proves that the model is overfitted due to the large variation in accuracy rate between training and test set. Perhaps additional tuning of the hyperparameters will accomplish better outcome. 
+
+* Sample size is probably not large enough for this kind of machine learning algorithm. Moreover, having additional features like region, producer as predictors can be an effective mechanism in improving the model.
+
+* Even though accuracy is the best measure to find the effectiveness of the model, there are other measurements that can be applied - like sensitivity and specificity to evaluate model performance. 
+
+* Out-of-Bag error (OOB) rate of 27.42% - means 72.58% of the OOB samples were correctly classified by the random forest - which is different from the test accuracy of 76.63%. OOB error signifies that for each bootstrap iteration and related trees, prediction error using data not in bootstrap sample is estimated. Whereas test accuracy score is how well the model actually performed on test data.
+
+* Overall the model performs well but to get more nuanced understanding of the model we need to explore other summary metrics like confusion matrix, precision, recall and F1 score. 
+
+**Multiple Linear Regression**
+
+* Multiple R-squared of 0.7868 along with the p-value of <0.05 implies predictor variables are relatively accurate in predicting total cup points. Although R-squared can be improved by adding more predictor variables in the regression model.
+
+* Initial F-statistic value of 254.9 increased to 326.9 after backward elimination means more of the variation per parameter is explained by the model.
+
+* Reduced AIC of 173.81 achieved by means of removing response variables with weak correlation will ensure better model performance. 
+
+* As illustrated in the histogram, residuals are normally distributed validates the assumption of running a linear model. It also suggests that model has a good fit, and reliable for prediction.
+
+
+### References
+
+Coffee Ratings. (2022). https://nayeembhuiyan.shinyapps.io/Coffee-rating/
+
+Plotly. (2021). Plotly R open source graphing library. https://plotly.com/r/
+
+rfordatascience/tidytuesday GitHub. (2022). Coffee rating. https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-07-07/readme.md
+
+R Studio. (2021). RStudio cheatsheets. https://www.rstudio.com/resources/cheatsheets/
+
+Supervised vs. Unsupervised Learning: What’s the Difference? (2021). https://www.ibm.com/cloud/blog/supervised-vs-unsupervised-learning
+
+Tierney, N. (2021). Getting started with naniar. http://naniar.njtierney.com/articles/getting-started-w-naniar.html#introduction
+
+Tierney, N. (2020). RMarkdown for scientists. https://rmd4sci.njtierney.com/
+
+UC Business Analytics R Programming Guide. Linear Regression. http://uc-r.github.io/linear_regression
+
+UC Business Analytics R Programming Guide. Random Forests. http://uc-r.github.io/random_forests
+
+Wickham, H. & Grolemund, G. (2017). R for data science. O'Reilly Media , Inc..
